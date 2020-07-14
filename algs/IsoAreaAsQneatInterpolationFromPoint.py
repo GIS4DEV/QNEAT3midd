@@ -45,6 +45,7 @@ from qgis.core import (QgsFeatureSink,
                        QgsFeatureRequest,
                        QgsGeometry,
                        QgsProcessing,
+                       QgsProcessingException,
                        QgsProcessingParameterEnum,
                        QgsProcessingParameterPoint,
                        QgsProcessingParameterField,
@@ -72,7 +73,6 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
     CELL_SIZE = "CELL_SIZE"
     STRATEGY = 'STRATEGY'
     METHOD = 'METHOD'
-    ENTRY_COST_CALCULATION_METHOD = 'ENTRY_COST_CALCULATION_METHOD'
     DIRECTION_FIELD = 'DIRECTION_FIELD'
     VALUE_FORWARD = 'VALUE_FORWARD'
     VALUE_BACKWARD = 'VALUE_BACKWARD'
@@ -110,7 +110,8 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
                 "<ul><li>Direction Field</li><li>Value for forward direction</li><li>Value for backward direction</li><li>Value for both directions</li><li>Default direction</li><li>Speed Field</li><li>Default Speed (affects entry/exit costs)</li><li>Topology tolerance</li></ul><br>"\
                 "<b>Output:</b><br>"\
                 "The output of the algorithm is one layer:"\
-                "<ul><li>TIN-Interpolation Distance Raster</li></ul>"
+                "<ul><li>TIN-Interpolation Distance Raster</li></ul>"\
+                "Shortest distance cost units are meters and Fastest time cost units are seconds."
 
     def msg(self, var):
         return "Type:"+str(type(var))+" repr: "+var.__str__()
@@ -131,9 +132,6 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
         self.METHODS = [self.tr('QGIS TIN-Interpolation (faster but not exact)'),
                         self.tr('QNEAT-Interpolation (slower but more exact')
                         ]
-
-        self.ENTRY_COST_CALCULATION_METHODS = [self.tr('Planar (only use with projected CRS)')]
-
 
         self.addParameter(QgsProcessingParameterFeatureSource(self.INPUT,
                                                               self.tr('Network Layer'),
@@ -158,10 +156,6 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
                                                      defaultValue=1))
 
         params = []
-        params.append(QgsProcessingParameterEnum(self.ENTRY_COST_CALCULATION_METHOD,
-                                                 self.tr('Entry Cost calculation method'),
-                                                 self.ENTRY_COST_CALCULATION_METHODS,
-                                                 defaultValue=1))
         params.append(QgsProcessingParameterField(self.DIRECTION_FIELD,
                                                   self.tr('Direction field'),
                                                   None,
@@ -181,7 +175,7 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
                                                  list(self.DIRECTIONS.keys()),
                                                  defaultValue=2))
         params.append(QgsProcessingParameterField(self.SPEED_FIELD,
-                                                  self.tr('Speed field'),
+                                                  self.tr('Speed field (km/h)'),
                                                   None,
                                                   self.INPUT,
                                                   optional=True))
@@ -209,7 +203,6 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
         strategy = self.parameterAsEnum(parameters, self.STRATEGY, context) #int
         interpolation_method = self.parameterAsEnum(parameters, self.METHOD, context)#int
 
-        entry_cost_calc_method = self.parameterAsEnum(parameters, self.ENTRY_COST_CALCULATION_METHOD, context) #int
         directionFieldName = self.parameterAsString(parameters, self.DIRECTION_FIELD, context) #str (empty if no field given)
         forwardValue = self.parameterAsString(parameters, self.VALUE_FORWARD, context) #str
         backwardValue = self.parameterAsString(parameters, self.VALUE_BACKWARD, context) #str
@@ -224,12 +217,18 @@ class IsoAreaAsQneatInterpolationFromPoint(QgisAlgorithm):
         input_coordinates = [startPoint]
         input_point = getFeatureFromPointParameter(startPoint)
 
+        if analysisCrs.isGeographic():
+            raise QgsProcessingException('QNEAT3 algorithms are designed to work with projected coordinate systems. Please use a projected coordinate system (eg. UTM zones) instead of geographic coordinate systems (eg. WGS84)!')
+
+        if analysisCrs != startPoint.sourceCrs():
+            raise QgsProcessingException('QNEAT3 algorithms require that all inputs to be the same projected coordinate reference system (including project coordinate system).')
+
         feedback.pushInfo("[QNEAT3Algorithm] Building Graph...")
         feedback.setProgress(10)
         net = Qneat3Network(network, input_coordinates, strategy, directionFieldName, forwardValue, backwardValue, bothValue, defaultDirection, analysisCrs, speedFieldName, defaultSpeed, tolerance, feedback)
         feedback.setProgress(40)
 
-        analysis_point = Qneat3AnalysisPoint("point", input_point, "point_id", net, net.list_tiedPoints[0], entry_cost_calc_method, feedback)
+        analysis_point = Qneat3AnalysisPoint("point", input_point, "point_id", net, net.list_tiedPoints[0], feedback)
 
         feedback.pushInfo("[QNEAT3Algorithm] Calculating Iso-Pointcloud...")
         iso_pointcloud = net.calcIsoPoints([analysis_point], max_dist)

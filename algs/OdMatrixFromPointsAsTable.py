@@ -40,6 +40,7 @@ from qgis.core import (QgsWkbTypes,
                        QgsFeature,
                        QgsFeatureSink,
                        QgsProcessing,
+                       QgsProcessingException,
                        QgsProcessingParameterEnum,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterFeatureSource,
@@ -64,7 +65,6 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
     POINTS = 'POINTS'
     ID_FIELD = 'ID_FIELD'
     STRATEGY = 'STRATEGY'
-    ENTRY_COST_CALCULATION_METHOD = 'ENTRY_COST_CALCULATION_METHOD'
     DIRECTION_FIELD = 'DIRECTION_FIELD'
     VALUE_FORWARD = 'VALUE_FORWARD'
     VALUE_BACKWARD = 'VALUE_BACKWARD'
@@ -102,7 +102,8 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
                 "<ul><li>Direction Field</li><li>Value for forward direction</li><li>Value for backward direction</li><li>Value for both directions</li><li>Default direction</li><li>Speed Field</li><li>Default Speed (affects entry/exit costs)</li><li>Topology tolerance</li></ul><br>"\
                 "<b>Output:</b><br>"\
                 "The output of the algorithm is one table:"\
-                "<ul><li>OD Matrix as table with network based distances as attributes</li></ul>"
+                "<ul><li>OD Matrix as table with network based distances as attributes</li></ul>"\
+                "Shortest distance cost units are meters and Fastest time cost units are seconds."
 
     def print_typestring(self, var):
         return "Type:"+str(type(var))+" repr: "+var.__str__()
@@ -118,10 +119,6 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
 
         self.STRATEGIES = [self.tr('Shortest distance'),
                            self.tr('Fastest time')]
-
-        self.ENTRY_COST_CALCULATION_METHODS = [self.tr('Ellipsoidal'),
-                                       self.tr('Planar (only use with projected CRS)')]
-
 
         self.addParameter(QgsProcessingParameterFeatureSource(self.INPUT,
                                                               self.tr('Network layer'),
@@ -140,10 +137,6 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
                                                      defaultValue=0))
 
         params = []
-        params.append(QgsProcessingParameterEnum(self.ENTRY_COST_CALCULATION_METHOD,
-                                         self.tr('Entry Cost calculation method'),
-                                         self.ENTRY_COST_CALCULATION_METHODS,
-                                         defaultValue=0))
         params.append(QgsProcessingParameterField(self.DIRECTION_FIELD,
                                                   self.tr('Direction field'),
                                                   None,
@@ -163,7 +156,7 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
                                                  list(self.DIRECTIONS.keys()),
                                                  defaultValue=2))
         params.append(QgsProcessingParameterField(self.SPEED_FIELD,
-                                                  self.tr('Speed field'),
+                                                  self.tr('Speed field (km/h)'),
                                                   None,
                                                   self.INPUT,
                                                   optional=True))
@@ -189,7 +182,6 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
         id_field = self.parameterAsString(parameters, self.ID_FIELD, context) #str
         strategy = self.parameterAsEnum(parameters, self.STRATEGY, context) #int
 
-        entry_cost_calc_method = self.parameterAsEnum(parameters, self.ENTRY_COST_CALCULATION_METHOD, context) #int
         directionFieldName = self.parameterAsString(parameters, self.DIRECTION_FIELD, context) #str (empty if no field given)
         forwardValue = self.parameterAsString(parameters, self.VALUE_FORWARD, context) #str
         backwardValue = self.parameterAsString(parameters, self.VALUE_BACKWARD, context) #str
@@ -201,10 +193,16 @@ class OdMatrixFromPointsAsTable(QgisAlgorithm):
 
         analysisCrs = network.sourceCrs()
 
+        if analysisCrs.isGeographic():
+            raise QgsProcessingException('QNEAT3 algorithms are designed to work with projected coordinate systems. Please use a projected coordinate system (eg. UTM zones) instead of geographic coordinate systems (eg. WGS84)!')
+
+        if analysisCrs != points.sourceCrs():
+            raise QgsProcessingException('QNEAT3 algorithms require that all inputs to be the same projected coordinate reference system (including project coordinate system).')
+
         feedback.pushInfo("[QNEAT3Algorithm] Building Graph...")
         net = Qneat3Network(network, points, strategy, directionFieldName, forwardValue, backwardValue, bothValue, defaultDirection, analysisCrs, speedFieldName, defaultSpeed, tolerance, feedback)
 
-        list_analysis_points = [Qneat3AnalysisPoint("point", feature, id_field, net, net.list_tiedPoints[i], entry_cost_calc_method, feedback) for i, feature in enumerate(getFeaturesFromQgsIterable(net.input_points))]
+        list_analysis_points = [Qneat3AnalysisPoint("point", feature, id_field, net, net.list_tiedPoints[i], feedback) for i, feature in enumerate(getFeaturesFromQgsIterable(net.input_points))]
 
         feat = QgsFeature()
         fields = QgsFields()

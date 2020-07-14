@@ -67,7 +67,6 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
     START_POINT = 'START_POINT'
     END_POINT = 'END_POINT'
     STRATEGY = 'STRATEGY'
-    ENTRY_COST_CALCULATION_METHOD = 'ENTRY_COST_CALCULATION_METHOD'
     DIRECTION_FIELD = 'DIRECTION_FIELD'
     VALUE_FORWARD = 'VALUE_FORWARD'
     VALUE_BACKWARD = 'VALUE_BACKWARD'
@@ -106,7 +105,8 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
                 "<ul><li>Direction Field</li><li>Value for forward direction</li><li>Value for backward direction</li><li>Value for both directions</li><li>Default direction</li><li>Speed Field</li><li>Default Speed (affects entry/exit costs)</li><li>Topology tolerance</li></ul><br>"\
                 "<b>Output:</b><br>"\
                 "The output of the algorithm is a Layer containing a <b>single linestring</b>, the attributes showcase the"\
-                "<ul><li>Name and coordinates of startpoint</li><li>Name and coordinates of endpoint</li><li>Entry-cost to enter network</li><li>Exit-cost to exit network</li><li>Cost of shortest path on graph</li><li>Total cost as sum of all cost elements</li></ul>"
+                "<ul><li>Name and coordinates of startpoint</li><li>Name and coordinates of endpoint</li><li>Entry-cost to enter network</li><li>Exit-cost to exit network</li><li>Cost of shortest path on graph</li><li>Total cost as sum of all cost elements</li></ul>"\
+                "Shortest distance cost units are meters and Fastest time cost units are seconds."
 
     def msg(self, var):
         return "Type:"+str(type(var))+" repr: "+var.__str__()
@@ -124,10 +124,6 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
                            self.tr('Fastest time')
                            ]
 
-        self.ENTRY_COST_CALCULATION_METHODS = [self.tr('Ellipsoidal'),
-                                       self.tr('Planar (only use with projected CRS)')]
-
-
         self.addParameter(QgsProcessingParameterFeatureSource(self.INPUT,
                                                               self.tr('Network Layer'),
                                                               [QgsProcessing.TypeVectorLine]))
@@ -141,10 +137,6 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
                                                      defaultValue=0))
 
         params = []
-        params.append(QgsProcessingParameterEnum(self.ENTRY_COST_CALCULATION_METHOD,
-                                                 self.tr('Entry Cost calculation method'),
-                                                 self.ENTRY_COST_CALCULATION_METHODS,
-                                                 defaultValue=0))
         params.append(QgsProcessingParameterField(self.DIRECTION_FIELD,
                                                   self.tr('Direction field'),
                                                   None,
@@ -164,7 +156,7 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
                                                  list(self.DIRECTIONS.keys()),
                                                  defaultValue=2))
         params.append(QgsProcessingParameterField(self.SPEED_FIELD,
-                                                  self.tr('Speed field'),
+                                                  self.tr('Speed field (km/h)'),
                                                   None,
                                                   self.INPUT,
                                                   optional=True))
@@ -193,7 +185,6 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
         endPoint = self.parameterAsPoint(parameters, self.END_POINT, context, network.sourceCrs()) #QgsPointXY
         strategy = self.parameterAsEnum(parameters, self.STRATEGY, context) #int
 
-        entry_cost_calc_method = self.parameterAsEnum(parameters, self.ENTRY_COST_CALCULATION_METHOD, context) #int
         directionFieldName = self.parameterAsString(parameters, self.DIRECTION_FIELD, context) #str (empty if no field given)
         forwardValue = self.parameterAsString(parameters, self.VALUE_FORWARD, context) #str
         backwardValue = self.parameterAsString(parameters, self.VALUE_BACKWARD, context) #str
@@ -205,6 +196,12 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
 
         analysisCrs = network.sourceCrs()
 
+        if analysisCrs.isGeographic():
+            raise QgsProcessingException('QNEAT3 algorithms are designed to work with projected coordinate systems. Please use a projected coordinate system (eg. UTM zones) instead of geographic coordinate systems (eg. WGS84)!')
+
+        if analysisCrs != context.project().crs():
+            raise QgsProcessingException('QNEAT3 algorithms require that all inputs to be the same projected coordinate reference system (including project coordinate system).')
+
         input_qgspointxy_list = [startPoint,endPoint]
         input_points = [getFeatureFromPointParameter(startPoint),getFeatureFromPointParameter(endPoint)]
 
@@ -213,7 +210,7 @@ class ShortestPathBetweenPoints(QgisAlgorithm):
         net = Qneat3Network(network, input_qgspointxy_list, strategy, directionFieldName, forwardValue, backwardValue, bothValue, defaultDirection, analysisCrs, speedFieldName, defaultSpeed, tolerance, feedback)
         feedback.setProgress(40)
 
-        list_analysis_points = [Qneat3AnalysisPoint("point", feature, "point_id", net, net.list_tiedPoints[i], entry_cost_calc_method, feedback) for i, feature in enumerate(input_points)]
+        list_analysis_points = [Qneat3AnalysisPoint("point", feature, "point_id", net, net.list_tiedPoints[i], feedback) for i, feature in enumerate(input_points)]
 
         start_vertex_idx = list_analysis_points[0].network_vertex_id
         end_vertex_idx = list_analysis_points[1].network_vertex_id

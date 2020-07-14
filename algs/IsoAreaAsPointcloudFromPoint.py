@@ -39,6 +39,7 @@ from qgis.core import (QgsWkbTypes,
                        QgsFields,
                        QgsField,
                        QgsProcessing,
+                       QgsProcessingException,
                        QgsProcessingParameterEnum,
                        QgsProcessingParameterPoint,
                        QgsProcessingParameterField,
@@ -64,7 +65,6 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
     START_POINT = 'START_POINT'
     MAX_DIST = "MAX_DIST"
     STRATEGY = 'STRATEGY'
-    ENTRY_COST_CALCULATION_METHOD = 'ENTRY_COST_CALCULATION_METHOD'
     DIRECTION_FIELD = 'DIRECTION_FIELD'
     VALUE_FORWARD = 'VALUE_FORWARD'
     VALUE_BACKWARD = 'VALUE_BACKWARD'
@@ -103,7 +103,8 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
                 "<b>Output:</b><br>"\
                 "The output of the algorithm is one layer:"\
                 "<ul><li>Point layer of reachable network nodes</li></ul><br>"\
-                "You may use the output pointcloud as input for further analyses."
+                "You may use the output pointcloud as input for further analyses."\
+                "Shortest distance cost units are meters and Fastest time cost units are seconds."
 
     def msg(self, var):
         return "Type:"+str(type(var))+" repr: "+var.__str__()
@@ -121,9 +122,6 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
                            self.tr('Fastest time')
                            ]
 
-        self.ENTRY_COST_CALCULATION_METHODS = [self.tr('Ellipsoidal'),
-                                       self.tr('Planar (only use with projected CRS)')]
-
         self.addParameter(QgsProcessingParameterFeatureSource(self.INPUT,
                                                               self.tr('Network Layer'),
                                                               [QgsProcessing.TypeVectorLine]))
@@ -139,10 +137,6 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
                                                      defaultValue=0))
 
         params = []
-        params.append(QgsProcessingParameterEnum(self.ENTRY_COST_CALCULATION_METHOD,
-                                                 self.tr('Entry Cost calculation method'),
-                                                 self.ENTRY_COST_CALCULATION_METHODS,
-                                                 defaultValue=0))
         params.append(QgsProcessingParameterField(self.DIRECTION_FIELD,
                                                   self.tr('Direction field'),
                                                   None,
@@ -162,7 +156,7 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
                                                  list(self.DIRECTIONS.keys()),
                                                  defaultValue=2))
         params.append(QgsProcessingParameterField(self.SPEED_FIELD,
-                                                  self.tr('Speed field'),
+                                                  self.tr('Speed field (km/h)'),
                                                   None,
                                                   self.INPUT,
                                                   optional=True))
@@ -190,7 +184,6 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
         max_dist = self.parameterAsDouble(parameters, self.MAX_DIST, context)#float
         strategy = self.parameterAsEnum(parameters, self.STRATEGY, context) #int
 
-        entry_cost_calc_method = self.parameterAsEnum(parameters, self.ENTRY_COST_CALCULATION_METHOD, context) #int
         directionFieldName = self.parameterAsString(parameters, self.DIRECTION_FIELD, context) #str (empty if no field given)
         forwardValue = self.parameterAsString(parameters, self.VALUE_FORWARD, context) #str
         backwardValue = self.parameterAsString(parameters, self.VALUE_BACKWARD, context) #str
@@ -204,12 +197,18 @@ class IsoAreaAsPointcloudFromPoint(QgisAlgorithm):
         input_coordinates = [startPoint]
         input_point = getFeatureFromPointParameter(startPoint)
 
+        if analysisCrs.isGeographic():
+            raise QgsProcessingException('QNEAT3 algorithms are designed to work with projected coordinate systems. Please use a projected coordinate system (eg. UTM zones) instead of geographic coordinate systems (eg. WGS84)!')
+
+        if analysisCrs != context.project().crs():
+            raise QgsProcessingException('QNEAT3 algorithms require that all inputs to be the same projected coordinate reference system (including project coordinate system).')
+
         feedback.pushInfo("[QNEAT3Algorithm] Building Graph...")
         feedback.setProgress(10)
         net = Qneat3Network(network, input_coordinates, strategy, directionFieldName, forwardValue, backwardValue, bothValue, defaultDirection, analysisCrs, speedFieldName, defaultSpeed, tolerance, feedback)
         feedback.setProgress(40)
 
-        analysis_point = Qneat3AnalysisPoint("point", input_point, "point_id", net, net.list_tiedPoints[0], entry_cost_calc_method, feedback)
+        analysis_point = Qneat3AnalysisPoint("point", input_point, "point_id", net, net.list_tiedPoints[0], feedback)
 
         fields = QgsFields()
         fields.append(QgsField('vertex_id', QVariant.Int, '', 254, 0))
